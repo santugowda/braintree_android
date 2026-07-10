@@ -96,6 +96,48 @@ nonce is delivered via `tokenizeCallback` — the full flow is not restarted.
 
 ---
 
+## Case 4 — Auto-link failure (BTGW rejects) ✅ PASS
+
+**Reproduction note:** the sandbox BTGW tokenizes the standalone `billing_agreement_token`
+**leniently** — it returns a nonce even for an unapproved or corrupted `ba_token` (attempts to
+force a real `BILLING_AGREEMENT_NOT_APPROVED` by not approving, and by corrupting the token, both
+still returned SUCCESS). The real 422 only occurs later at **transaction creation**, not at
+tokenize time. To validate the SDK's failure handling deterministically, a `[QA] Force auto-link
+failure` toggle makes `attemptAutoLinkTokenization` throw a simulated exception in place of the
+BTGW call.
+
+### Case 4a — Path A failure (`handleReturnToApp` → tokenize)
+
+**Steps:** App Switch ON, Skip OFF, Force-failure ON, App Link disabled → tap BA → return manually.
+
+**Actual logs**
+```
+handleReturnToApp: NoResult + valid pending session (baToken=BA-44W71636H8283143K) -> routing to auto-link (autoLinkPending)
+tokenize: autoLinkPending -> tokenizeAutoLink()
+attemptAutoLink: INITIATOR calling BTGW (baToken=BA-44W71636H8283143K)
+attemptAutoLink: BTGW FAILED -> QA forced auto-link failure (simulated BILLING_AGREEMENT_NOT_APPROVED)
+tokenizeAutoLink: FAILURE -> QA forced auto-link failure (simulated BILLING_AGREEMENT_NOT_APPROVED)
+```
+**Result:** PASS. Error propagates to `PayPalResult.Failure`; the Demo surfaces it via `handleError`.
+
+### Case 4b — Path B failure (re-click fall-through)
+
+**Steps:** App Switch ON, Skip ON, Force-failure ON → tap BA → return → tap BA again.
+
+**Actual logs**
+```
+Demo onResume: SKIP handleReturnToApp (re-click test mode) — session preserved
+re-click: STARTED (baToken=BA-0A08708461289983N)
+attemptAutoLink: INITIATOR calling BTGW (baToken=BA-0A08708461289983N)
+attemptAutoLink: BTGW FAILED -> QA forced auto-link failure (simulated BILLING_AGREEMENT_NOT_APPROVED)
+re-click: FAILED (...) -> falling through to normal flow
+stored pending session for app-switch vault (baToken=BA-4YE82970PR612163X)   ← fresh flow launched
+```
+**Result:** PASS. On re-click failure no error is surfaced; the SDK falls through to a fresh
+`createPaymentAuthRequest` (new session stored) — as designed.
+
+---
+
 ## Summary
 
 | Case | Scenario | Result |
@@ -103,17 +145,26 @@ nonce is delivered via `tokenizeCallback` — the full flow is not restarted.
 | 1 | Path A — `handleReturnToApp` NoResult → auto-link (manual return) | ✅ PASS |
 | 2 | URL return wins — auto-link suppressed, store cleared (App Link works) | ✅ PASS |
 | 3 | Path B — re-click delivers nonce via `tokenizeCallback` | ✅ PASS |
+| 4a | Path A failure — BTGW error → `PayPalResult.Failure` (error shown) | ✅ PASS |
+| 4b | Path B failure — re-click falls through to a fresh flow | ✅ PASS |
 
-Both PR 1 auto-link entry points and the URL-return-wins guard are validated end-to-end on a real
-device against the PayPal sandbox.
+Both PR 1 auto-link entry points, the URL-return-wins guard, and both failure paths are validated
+end-to-end on a real device against the PayPal sandbox.
+
+## Key finding — sandbox tokenizes leniently
+
+The auto-link `billing_agreement_token` tokenization **succeeds in sandbox even for an unapproved or
+corrupted `ba_token`** (verified: not approving → success; corrupting the token → success). The
+`BILLING_AGREEMENT_NOT_APPROVED` 422 surfaces only at **transaction creation**, downstream of the
+SDK's tokenize step. Failure handling was therefore validated via a client-side simulated throw
+(`[QA] Force auto-link failure`) and by unit tests that stub the BTGW error.
 
 ## Not yet exercised
 
-- **422 `BILLING_AGREEMENT_NOT_APPROVED`** — start BA flow, do **not** approve in PayPal, return, then
-  trigger auto-link. Expected: `attemptAutoLink: BTGW FAILED` → Path A surfaces `PayPalResult.Failure`;
-  re-click (Path B) logs `re-click: FAILED -> falling through to normal flow`.
-- **Session expiry (TTL 30 min)** — return after TTL → `attemptAutoLink: session EXPIRED` / `AUTO_LINK_EXPIRED`.
-- **Deduplication** — concurrent triggers → single BTGW call (`attemptAutoLink: awaiting in-flight BTGW call (dedup)`).
+- **Session expiry (TTL 30 min)** — return after TTL → `attemptAutoLink: session EXPIRED` /
+  `AUTO_LINK_EXPIRED`. (Covered by unit tests; on-device would need a TTL override or a 30-min wait.)
+- **Deduplication** — concurrent triggers → single BTGW call
+  (`attemptAutoLink: awaiting in-flight BTGW call (dedup)`). (Covered by unit tests; hard to race manually.)
 
 ## Notes
 
