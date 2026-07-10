@@ -1,6 +1,7 @@
 package com.braintreepayments.api.paypal
 
 import android.content.Intent
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.result.ActivityResultCaller
 import androidx.activity.result.ActivityResultRegistry
@@ -162,18 +163,21 @@ class PayPalLauncher internal constructor(
         )
 
         analyticsClient.sendEvent(PayPalAnalytics.HANDLE_RETURN_STARTED, analyticsEventParams)
+        Log.d(AUTO_LINK_LOG_TAG, "handleReturnToApp: started, intentData=${intent.data}")
 
         return when (
             val browserSwitchResult = browserSwitchClient.completeRequest(intent, pendingRequest.pendingRequestString)
         ) {
             is BrowserSwitchFinalResult.Success -> {
                 // URL return is authoritative: it supersedes any pending auto-link session.
+                Log.d(AUTO_LINK_LOG_TAG, "handleReturnToApp: URL return SUCCESS (auto-link suppressed, store cleared)")
                 pendingPaymentStore.clear()
                 analyticsClient.sendEvent(PayPalAnalytics.HANDLE_RETURN_SUCCEEDED, analyticsEventParams)
                 PayPalPaymentAuthResult.Success(browserSwitchResult)
             }
 
             is BrowserSwitchFinalResult.Failure -> {
+                Log.d(AUTO_LINK_LOG_TAG, "handleReturnToApp: browser switch FAILURE: ${browserSwitchResult.error.message}")
                 analyticsClient.sendEvent(
                     PayPalAnalytics.HANDLE_RETURN_FAILED,
                     analyticsEventParams.copy(
@@ -195,9 +199,19 @@ class PayPalLauncher internal constructor(
     private fun handleNoResult(analyticsEventParams: AnalyticsEventParams): PayPalPaymentAuthResult {
         val session = pendingPaymentStore.pendingSession
         return if (session != null && !session.isExpired()) {
+            Log.d(
+                AUTO_LINK_LOG_TAG,
+                "handleReturnToApp: NoResult + valid pending session (baToken=${session.baToken}) " +
+                    "-> routing to auto-link (autoLinkPending)"
+            )
             analyticsClient.sendEvent(PayPalAnalytics.AUTO_LINK_HANDLE_RETURN_PENDING, analyticsEventParams)
             PayPalPaymentAuthResult.Success(autoLinkPending = true)
         } else {
+            Log.d(
+                AUTO_LINK_LOG_TAG,
+                "handleReturnToApp: NoResult, no valid pending session " +
+                    "(session=${if (session == null) "null" else "expired"}) -> NoResult"
+            )
             analyticsClient.sendEvent(PayPalAnalytics.HANDLE_RETURN_NO_RESULT, analyticsEventParams)
             PayPalPaymentAuthResult.NoResult
         }
@@ -260,6 +274,9 @@ class PayPalLauncher internal constructor(
     }
 
     companion object {
+        // TODO: local debug logging for auto-link QA — remove before merge
+        private const val AUTO_LINK_LOG_TAG = "PayPalAutoLink"
+
         private fun createBrowserSwitchError(exception: BrowserSwitchException): Exception {
             return BraintreeException(
                 "AndroidManifest.xml is incorrectly configured or another app defines the same " +

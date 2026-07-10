@@ -3,6 +3,7 @@ package com.braintreepayments.api.paypal
 import android.content.Context
 import android.net.Uri
 import android.text.TextUtils
+import android.util.Log
 import androidx.core.net.toUri
 import com.braintreepayments.api.BrowserSwitchOptions
 import com.braintreepayments.api.LaunchType
@@ -168,9 +169,17 @@ class PayPalClient internal constructor(
         payPalRequest: PayPalRequest,
         tokenizeCallback: PayPalTokenizeCallback
     ): Boolean {
-        val session = pendingPaymentStore.pendingSession ?: return false
-        if (session.isExpired() || !getAppSwitchUseCase()) return false
+        val session = pendingPaymentStore.pendingSession
+        if (session == null) {
+            Log.d(AUTO_LINK_LOG_TAG, "re-click: no pending session -> normal flow")
+            return false
+        }
+        if (session.isExpired() || !getAppSwitchUseCase()) {
+            Log.d(AUTO_LINK_LOG_TAG, "re-click: session expired or app-switch off -> normal flow")
+            return false
+        }
 
+        Log.d(AUTO_LINK_LOG_TAG, "re-click: STARTED (baToken=${session.baToken})")
         val analyticsParams = AnalyticsEventParams(
             contextId = session.baToken,
             isVaultRequest = true,
@@ -181,6 +190,7 @@ class PayPalClient internal constructor(
         return try {
             val nonce = attemptAutoLinkTokenization()
             if (nonce != null) {
+                Log.d(AUTO_LINK_LOG_TAG, "re-click: SUCCESS, delivering nonce via tokenizeCallback")
                 pendingPaymentStore.clear()
                 braintreeClient.sendAnalyticsEvent(PayPalAnalytics.AUTO_LINK_RECLICK_SUCCEEDED, analyticsParams)
                 tokenizeCallback.onPayPalResult(PayPalResult.Success(nonce))
@@ -190,6 +200,7 @@ class PayPalClient internal constructor(
             }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
+            Log.d(AUTO_LINK_LOG_TAG, "re-click: FAILED (${e.message}) -> falling through to normal flow")
             pendingPaymentStore.clear()
             braintreeClient.sendAnalyticsEvent(
                 PayPalAnalytics.AUTO_LINK_RECLICK_FAILED,
@@ -375,6 +386,7 @@ class PayPalClient internal constructor(
     ): PayPalResult {
         // Auto-link path: no URL return — tokenize the stored BA token directly with BTGW.
         if (paymentAuthResult.autoLinkPending) {
+            Log.d(AUTO_LINK_LOG_TAG, "tokenize: autoLinkPending -> tokenizeAutoLink()")
             return tokenizeAutoLink()
         }
 
@@ -482,6 +494,7 @@ class PayPalClient internal constructor(
                     intent = payPalResponse.intent?.stringValue,
                     paymentType = "billing-agreement"
                 )
+                Log.d(AUTO_LINK_LOG_TAG, "stored pending session for app-switch vault (baToken=$baToken)")
             }
         }
     }
@@ -499,15 +512,18 @@ class PayPalClient internal constructor(
         return try {
             val nonce = attemptAutoLinkTokenization()
             if (nonce != null) {
+                Log.d(AUTO_LINK_LOG_TAG, "tokenizeAutoLink: SUCCESS -> PayPalResult.Success")
                 pendingPaymentStore.clear()
                 sendTokenizeSuccessEvent(analyticsEventParams)
                 PayPalResult.Success(nonce)
             } else {
+                Log.d(AUTO_LINK_LOG_TAG, "tokenizeAutoLink: no nonce (expired/no session) -> Failure")
                 pendingPaymentStore.clear()
                 PayPalResult.Failure(BraintreeException(AUTO_LINK_EXPIRED_MESSAGE))
             }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
+            Log.d(AUTO_LINK_LOG_TAG, "tokenizeAutoLink: FAILURE -> ${e.message}")
             pendingPaymentStore.clear()
             sendTokenizeFailureEvent(PayPalResult.Failure(e), analyticsEventParams)
             PayPalResult.Failure(e)
@@ -533,6 +549,7 @@ class PayPalClient internal constructor(
             shopperSessionId = shopperSessionId
         )
         if (session.isExpired()) {
+            Log.d(AUTO_LINK_LOG_TAG, "attemptAutoLink: session EXPIRED -> clearing, returning null")
             pendingPaymentStore.clear()
             braintreeClient.sendAnalyticsEvent(PayPalAnalytics.AUTO_LINK_EXPIRED, analyticsParams)
             return null
@@ -540,15 +557,22 @@ class PayPalClient internal constructor(
 
         val (deferred, isInitiator) = pendingPaymentStore.getOrCreateDeferred()
         return if (isInitiator) {
+            Log.d(AUTO_LINK_LOG_TAG, "attemptAutoLink: INITIATOR calling BTGW (baToken=${session.baToken})")
             braintreeClient.sendAnalyticsEvent(PayPalAnalytics.AUTO_LINK_TOKENIZE_STARTED, analyticsParams)
             try {
+                if (forceAutoLinkFailureForQa) {
+                    // TODO: local QA — simulate a BTGW rejection to exercise the failure path. Remove before merge.
+                    throw BraintreeException("QA forced auto-link failure (simulated BILLING_AGREEMENT_NOT_APPROVED)")
+                }
                 val nonce = autoLinkTokenizeUseCase(session)
                 pendingPaymentStore.autoLinkNonce = nonce
                 deferred.complete(nonce)
+                Log.d(AUTO_LINK_LOG_TAG, "attemptAutoLink: BTGW SUCCESS, nonce=${nonce.string}")
                 braintreeClient.sendAnalyticsEvent(PayPalAnalytics.AUTO_LINK_TOKENIZE_SUCCEEDED, analyticsParams)
                 nonce
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
+                Log.d(AUTO_LINK_LOG_TAG, "attemptAutoLink: BTGW FAILED -> ${e.message}")
                 deferred.completeExceptionally(e)
                 pendingPaymentStore.autoLinkNonce = null
                 pendingPaymentStore.tokenizeDeferred = null
@@ -559,6 +583,7 @@ class PayPalClient internal constructor(
                 throw e
             }
         } else {
+            Log.d(AUTO_LINK_LOG_TAG, "attemptAutoLink: awaiting in-flight BTGW call (dedup)")
             val nonce = deferred.await()
             pendingPaymentStore.autoLinkNonce = nonce
             nonce
@@ -612,6 +637,14 @@ class PayPalClient internal constructor(
             "for more information."
 
         internal const val BROWSER_SWITCH_EXCEPTION_MESSAGE = "The response contained inconsistent data."
+
+        // TODO: local debug logging for auto-link QA — remove before merge
+        private const val AUTO_LINK_LOG_TAG = "PayPalAutoLink"
+
+        // TODO: local QA — when true, the stored ba_token is corrupted so BTGW rejects it,
+        // forcing the auto-link failure path. Set by the Demo. Remove before merge.
+        @JvmStatic
+        var forceAutoLinkFailureForQa = false
 
         internal const val AUTO_LINK_EXPIRED_MESSAGE =
             "The billing agreement session has expired. Please restart the PayPal flow."

@@ -133,6 +133,18 @@
             android:summary="Enable PayPal App Switch"
             android:defaultValue="false" />
 
+        <CheckBoxPreference
+            android:key="paypal_skip_handle_return"
+            android:title="[QA] Skip handleReturnToApp"
+            android:summary="Leaves the pending session so the next PayPal tap tests re-click auto-link"
+            android:defaultValue="false" />
+
+        <CheckBoxPreference
+            android:key="paypal_force_autolink_failure"
+            android:title="[QA] Force auto-link failure"
+            android:summary="Corrupts the ba_token so BTGW rejects it — exercises the auto-link failure path"
+            android:defaultValue="false" />
+
         <ListPreference
             android:key="paypal_landing_page_type"
             android:title="@string/paypal_landing_page_type"

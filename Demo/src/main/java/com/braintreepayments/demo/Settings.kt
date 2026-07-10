@@ -193,6 +193,22 @@ object Settings {
         return getPreferences(context).getBoolean("paypal_app_switch", false)
     }
 
+    // TODO: local QA toggle for auto-link re-click testing — remove before merge.
+    // When ON, the Demo does NOT call handleReturnToApp on return, so the pending session
+    // survives and the next PayPal tap exercises the re-click (Path B) auto-link path.
+    @JvmStatic
+    fun isPayPalSkipHandleReturnEnabled(context: Context): Boolean {
+        return getPreferences(context).getBoolean("paypal_skip_handle_return", false)
+    }
+
+    // TODO: local QA toggle to force an auto-link BTGW failure — remove before merge.
+    // When ON, the SDK corrupts the stored ba_token so BTGW rejects it, exercising the
+    // auto-link failure path (Path A -> handleError; Path B -> fall through) end-to-end.
+    @JvmStatic
+    fun isPayPalForceAutoLinkFailureEnabled(context: Context): Boolean {
+        return getPreferences(context).getBoolean("paypal_force_autolink_failure", false)
+    }
+
     @JvmStatic
     fun usePayPalAddressOverride(context: Context): Boolean {
         return getPreferences(context).getBoolean("paypal_address_override", true)

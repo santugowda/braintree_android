@@ -5,6 +5,7 @@ import static com.braintreepayments.demo.PayPalRequestFactory.createPayPalVaultR
 
 import android.net.Uri;
 import android.os.Bundle;
+import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -145,6 +146,12 @@ public class PayPalFragment extends BaseFragment {
         super.onResume();
         PayPalPendingRequest.Started pendingRequest = getPendingRequest();
         if (pendingRequest != null) {
+            // [QA] When the skip toggle is on, do NOT handle the return — leaves the pending
+            // session intact so the next PayPal tap exercises re-click (Path B) auto-link.
+            if (Settings.isPayPalSkipHandleReturnEnabled(requireContext())) {
+                Log.d("PayPalAutoLink", "Demo onResume: SKIP handleReturnToApp (re-click test mode) — session preserved");
+                return;
+            }
             PayPalPaymentAuthResult paymentAuthResult = payPalLauncher.handleReturnToApp(pendingRequest, requireActivity().getIntent());
             if (paymentAuthResult instanceof PayPalPaymentAuthResult.Success) {
                 completePayPalFlow((PayPalPaymentAuthResult.Success) paymentAuthResult);
@@ -179,6 +186,10 @@ public class PayPalFragment extends BaseFragment {
     ) {
         FragmentActivity activity = getActivity();
         activity.setProgressBarIndeterminateVisibility(true);
+
+        // [QA] forward the force-auto-link-failure toggle to the SDK (re-read on each launch)
+        PayPalClient.setForceAutoLinkFailureForQa(
+            Settings.isPayPalForceAutoLinkFailureEnabled(requireContext()));
 
         dataCollector = new DataCollector(requireContext(), super.getAuthStringArg());
 
