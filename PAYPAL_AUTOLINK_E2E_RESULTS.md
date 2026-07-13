@@ -147,9 +147,11 @@ stored pending session for app-switch vault (baToken=BA-4YE82970PR612163X)   ←
 | 3 | Path B — re-click delivers nonce via `tokenizeCallback` | ✅ PASS |
 | 4a | Path A failure — BTGW error → `PayPalResult.Failure` (error shown) | ✅ PASS |
 | 4b | Path B failure — re-click falls through to a fresh flow | ✅ PASS |
+| 5 | Charge nonce (CREATE A TRANSACTION) | ⚠️ N/A — Demo/gateway limitation (fails for normal nonces too) |
 
 Both PR 1 auto-link entry points, the URL-return-wins guard, and both failure paths are validated
-end-to-end on a real device against the PayPal sandbox.
+end-to-end on a real device against the PayPal sandbox. Charging the nonce could not be validated
+through the Demo (see Case 5). A separate finding: the auto-link nonce carries no payer details.
 
 ## Key finding — sandbox tokenizes leniently
 
@@ -158,6 +160,45 @@ corrupted `ba_token`** (verified: not approving → success; corrupting the toke
 `BILLING_AGREEMENT_NOT_APPROVED` 422 surfaces only at **transaction creation**, downstream of the
 SDK's tokenize step. Failure handling was therefore validated via a client-side simulated throw
 (`[QA] Force auto-link failure`) and by unit tests that stub the BTGW error.
+
+> Update: even with the BTGW `BILLING_AGREEMENT_NOT_APPROVED` change deployed in sandbox, we could
+> not reproduce a real 422 at tokenize time — returning buyers are auto-approved, and a fresh
+> never-consented buyer + corrupted token both still returned SUCCESS. So the auto-link
+> `billing_agreement_token` tokenization does not appear to be gated by that change at tokenize time
+> in sandbox. This is a **BTGW-server** question, not an SDK one — worth confirming with the BTGW team
+> whether the standalone `billing_agreement_token` path is covered.
+
+## Case 5 — Charging the nonce (CREATE A TRANSACTION) — Demo/gateway limitation, not a PR issue
+
+We attempted to charge the resulting nonce via the Demo's **CREATE A TRANSACTION** button to confirm
+it is usable. Every attempt failed with `Transaction Failed: Unknown or expired payment_method_nonce`
+— **including a control run using a normal, non-auto-link nonce**.
+
+**Control test (decisive):** App Switch **OFF** → normal browser Billing Agreement → nonce with
+**full payer details** (First/Last name, email, Payer ID `HBA5XYWLXHUCU`, billing address) →
+**CREATE A TRANSACTION** → same `Unknown or expired payment_method_nonce`.
+
+**Conclusion:** the charge failure reproduces with a completely normal PayPal BA nonce, so it is a
+**Demo / sample-merchant-server / gateway limitation** for PayPal billing-agreement charges in this
+environment — **not related to the auto-link feature**. Charging cannot be validated through this
+Demo; a real charge test needs a proper merchant server or the BTGW/PayPal team.
+
+## Known limitation — auto-link nonce has no payer details
+
+Comparing the two nonce screens:
+
+| Field | Normal (URL-return) nonce | Auto-link nonce |
+|-------|---------------------------|-----------------|
+| First / Last name | `Charlie Williams` | *(empty)* |
+| Email | `charlie-williams@paypal.com` | `null` |
+| Payer ID | `HBA5XYWLXHUCU` | *(empty)* |
+| Billing address | `1 Main St, San Jose CA 95131 US` | `null` |
+
+The auto-link `billing_agreement_token` path returns a nonce **without enriched payer details**,
+whereas the normal web-URL path populates them. Merchants who read `PayPalAccountNonce` fields
+(email / payerId / name / address) will get **nulls from the auto-link path**. Worth flagging to
+product/reviewers, and to BTGW (does the standalone `billing_agreement_token` tokenization return
+payer details?).
 
 ## Not yet exercised
 
