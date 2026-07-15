@@ -25,7 +25,8 @@ class PayPalLauncher internal constructor(
     private val resolvePayPalUseCase: ResolvePayPalUseCase =
         ResolvePayPalUseCase(MerchantRepository.instance),
     lazyAnalyticsClient: Lazy<AnalyticsClient>,
-    private val analyticsParamRepository: AnalyticsParamRepository = AnalyticsParamRepository.instance
+    private val analyticsParamRepository: AnalyticsParamRepository = AnalyticsParamRepository.instance,
+    private val pendingPaymentStore: PendingPaymentStore = PendingPaymentStore.instance
 ) {
     /**
      * Used to launch the PayPal flow in a web browser and deliver results to your Activity
@@ -125,6 +126,15 @@ class PayPalLauncher internal constructor(
                     eventName = event,
                     analyticsEventParams = analyticsEventParams
                 )
+
+                // Store pending request string for auto-link handleReturnToApp path
+                if (pendingPaymentStore.pendingSession != null) {
+                    pendingPaymentStore.originalPendingRequestString = request.pendingRequest
+                    analyticsClient.sendEvent(
+                        PayPalAnalytics.AUTO_LINK_LAUNCH_STORED, analyticsEventParams
+                    )
+                }
+
                 PayPalPendingRequest.Started(request.pendingRequest)
             }
         }
@@ -162,10 +172,20 @@ class PayPalLauncher internal constructor(
 
         analyticsClient.sendEvent(PayPalAnalytics.HANDLE_RETURN_STARTED, analyticsEventParams)
 
+        // Auto-link: check for resolved nonce before calling completeRequest
+        val autoNonce = pendingPaymentStore.autoLinkNonce
+        if (autoNonce != null) {
+            analyticsClient.sendEvent(
+                PayPalAnalytics.AUTO_LINK_HANDLE_RETURN_SUCCEEDED, analyticsEventParams
+            )
+            return PayPalPaymentAuthResult.Success(autoNonce)
+        }
+
         return when (
             val browserSwitchResult = browserSwitchClient.completeRequest(intent, pendingRequest.pendingRequestString)
         ) {
             is BrowserSwitchFinalResult.Success -> {
+                pendingPaymentStore.clear()
                 analyticsClient.sendEvent(PayPalAnalytics.HANDLE_RETURN_SUCCEEDED, analyticsEventParams)
                 PayPalPaymentAuthResult.Success(browserSwitchResult)
             }
